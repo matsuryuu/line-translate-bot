@@ -55,12 +55,16 @@ app.listen(PORT, () => console.log(`Server started on ${PORT}`));
 /* ============== メイン処理 ============== */
 async function handleEvent(event) {
 // 個チャットは自分のみ許可
-if (event.source?.type === "user") {
-if (ALLOWED_USER_ID !== "*" && event.source.userId !== ALLOWED_USER_ID) {
-return;
-}
-}
+// if (event.source?.type === "user") {
+// if (ALLOWED_USER_ID !== "*" && event.source.userId !== ALLOWED_USER_ID) {
+// return;
+// }
+// }
+async function handleEvent(event) {
+console.log("User ID:", event.source?.userId); // ★ 追加
 
+
+  
 if (event.type !== "message" || event.message.type !== "text") return;
 
 const input = (event.message.text || "").trim();

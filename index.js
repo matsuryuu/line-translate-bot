@@ -62,7 +62,7 @@ async function handleEvent(event) {
 // }
 async function handleEvent(event) {
 console.log("User ID:", event.source?.userId); // ★ 追加
-
+}
 
   
 if (event.type !== "message" || event.message.type !== "text") return;

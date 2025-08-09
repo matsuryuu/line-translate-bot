@@ -11,6 +11,21 @@ import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import OpenAI from "openai";
 
+// ① いちばん最初に置く
+if (event.source?.type === "user" &&
+event.message?.type === "text" &&
+(event.message.text || "").trim() === "@id") {
+await client.replyMessage(event.replyToken, {
+type: "text",
+text: `Your userId: ${event.source.userId}`
+});
+return;
+}
+
+
+
+
+
 /* ====== 環境変数（Render の Environment で設定） ======
 OPENAI_API_KEY : OpenAIのAPIキー（sk-...）
 LINE_ACCESS_TOKEN : LINE チャネルアクセストークン（ロングターム）

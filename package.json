@@ -1,0 +1,16 @@
+{
+"name": "line-translate-bot",
+"type": "module",
+"version": "1.0.0",
+"dependencies": {
+"@line/bot-sdk": "^7.5.2",
+"express": "^4.19.2",
+"openai": "^4.53.0"
+},
+"scripts": {
+"start": "node index.js"
+},
+"engines": {
+"node": ">=18"
+}
+}

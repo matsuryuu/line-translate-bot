@@ -32,9 +32,9 @@ async function translateWithOpenAI({ src, from, to }) {
 const system = `
 あなたは高精度の翻訳エンジンです。出力は訳文のみ。説明や前置きは不要。
 専門用語（半導体・フォトレジスト分野など）は文脈に応じてできるだけ原義を保ち、不要な意訳や脚色はしない。
-句読点や敬語などは自然な文体に整えるが、情報を増減しない。
+直訳をするのではなく意味を理解してその国の人が分かりやすいように意訳してください。
+ただし話の主題となるような情報を増減させないように気をつけて。
 `.trim();
-
 const user = `【原文（${from}）】\n${src}\n\n---\n出力言語：${to}\n出力は訳文のみ。`;
 
 const r = await openai.chat.completions.create({

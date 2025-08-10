@@ -1,4 +1,4 @@
-// index.js — LINE × OpenAI 翻訳Bot（軽量・ノーログ）
+// index.js — LINE × OpenAI 翻訳Bot（軽量・グループ制限・JSON出力）
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import OpenAI from "openai";
@@ -55,14 +55,15 @@ return false;
 }
 }
 
-/* ====== OpenAI 翻訳（短い日本語プロンプト＋タイムアウト） ====== */
+/* ====== OpenAI 翻訳（JSON出力＋タイムアウト） ====== */
 async function openaiTranslate(text, target) {
-// target: "JA" | "ZHTW"
 const langName = target === "JA" ? "日本語" : "繁體字";
-const prompt = `翻訳のみを出力。説明や原文の繰り返しは不要。専門用語は原義を保ち情報の増減はしない。現地人が分かりやすいように自然な文章へ翻訳。
+const prompt = `あなたは超高精度の翻訳エンジンです。出力は必ずJSON形式のみ。
+返すJSONは {"text":"..."} の1個だけ。textには翻訳文のみを入れる。
+説明や補足、原文の繰り返し、引用符や記号の追加は禁止。
+技術的な専門用語は文脈に沿って原義を保ち意訳しすぎない。翻訳文は現地人が読みやすい自然な文章を徹底して
 出力言語：${langName}
-原文：
-"""${text}"""`;
+原文："""${text}"""`;
 
 const ac = new AbortController();
 const timer = setTimeout(() => ac.abort("timeout"), OPENAI_TIMEOUT_MS);
@@ -72,8 +73,15 @@ model: MODEL,
 messages: [{ role: "user", content: prompt }],
 temperature: 0.1,
 max_tokens: MAX_TOKENS,
+response_format: { type: "json_object" },
 }, { signal: ac.signal });
-return (r.choices[0]?.message?.content || "").trim();
+
+const raw = (r.choices[0]?.message?.content || "{}").trim();
+let out = "";
+try { out = JSON.parse(raw).text || ""; } catch { out = raw; }
+
+// 保険：全体を「」で囲っている場合は外す
+return out.replace(/^「([^「」]+)」$/u, "$1").trim();
 } finally {
 clearTimeout(timer);
 }
@@ -109,12 +117,7 @@ if (!ok) return;
 if (event.type !== "message" || event.message.type !== "text") return;
 
 const input = (event.message.text || "").trim();
-if (!input) {
-return client.replyMessage(event.replyToken, {
-type: "text",
-text: "日本語・繁體字・韓国語の文を送ってください。自動で翻訳します。",
-});
-}
+if (!input) return;
 
 const mode = detectMode(input);
 
@@ -147,3 +150,4 @@ text: "翻訳に失敗しました。少し時間をおいて再試行してく�
 }
 
 app.listen(PORT, () => {});
+

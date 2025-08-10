@@ -59,7 +59,7 @@ return false;
 async function openaiTranslate(text, target) {
 // target: "JA" | "ZHTW"
 const langName = target === "JA" ? "日本語" : "繁體字";
-const prompt = `翻訳のみを出力。説明や原文の繰り返しは不要。専門用語は原義を保ちつつ自然に。情報の増減はしない。
+const prompt = `翻訳のみを出力。説明や原文の繰り返しは不要。専門用語は原義を保ち情報の増減はしない。現地人が分かりやすいように自然な文章へ翻訳。
 出力言語：${langName}
 原文：
 """${text}"""`;

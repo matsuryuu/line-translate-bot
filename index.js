@@ -1,29 +1,33 @@
-// index.js — LINE × OpenAI 翻訳Bot（JA↔ZHTW, KO→JA+ZHTW）
+// index.js — LINE × OpenAI 翻訳Bot（DMは管理者のみ / グループは管理者在籍グループのみ / 方向は文字種で自動判定）
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import OpenAI from "openai";
 
+/* ====== 環境変数 ====== */
 const {
 LINE_ACCESS_TOKEN,
 LINE_CHANNEL_SECRET,
 OPENAI_API_KEY,
-ALLOWED_USER_ID,
+ALLOWED_USER_ID, // 管理者（あなた）の userId
 PORT = 10000,
 } = process.env;
 
-const lineConfig = {
-channelAccessToken: LINE_ACCESS_TOKEN,
-channelSecret: LINE_CHANNEL_SECRET,
-};
+/* ====== クライアント ====== */
+const lineConfig = { channelAccessToken: LINE_ACCESS_TOKEN, channelSecret: LINE_CHANNEL_SECRET };
 const client = new Client(lineConfig);
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-/* 文字種判定（厳格化） */
+/* ====== 軽量化用パラメータ ====== */
+const MODEL = "gpt-4o-mini";
+const MAX_TOKENS = 200;
+const OPENAI_TIMEOUT_MS = 8000;
+
+/* ====== 文字種判定 ====== */
 const reHangul = /[\u3130-\u318F\uAC00-\uD7AF]/; // ハングル
 const reHiragana = /[\u3040-\u309F]/; // ひらがな
 const reKatakana = /[\u30A0-\u30FF\u31F0-\u31FF]/; // カタカナ
 const reKana = /[\u3040-\u309F\u30A0-\u30FF\u31F0-\u31FF]/;
-const reCJK = /[\u4E00-\u9FFF]/; // CJK 漢字（簡体/繁体/日常漢字）
+const reCJK = /[\u4E00-\u9FFF]/; // CJK漢字
 
 function detectMode(text) {
 const hasHangul = reHangul.test(text);
@@ -31,47 +35,54 @@ const hasKana = reKana.test(text);
 const hasCJK = reCJK.test(text);
 
 if (hasHangul) return "ko2both"; // 韓→（日・繁）
-if (hasKana) return "ja2zh"; // 日→繁
+if (hasKana) return "ja2zh"; // 日→繁（台湾華語）
 if (hasCJK && !hasKana && !hasHangul) return "zh2ja"; // 華→日
 return "unknown";
 }
 
-/* OpenAI で翻訳（日本語プロンプト） */
-async function translateStrict(text, target) {
+/* ====== 管理者がグループ在籍か確認 ====== */
+async function isOwnerInThread(source, ownerId) {
+try {
+if (source?.type === "group") {
+await client.getGroupMemberProfile(source.groupId, ownerId);
+return true; // 取得成功＝在籍
+}
+if (source?.type === "room") {
+await client.getRoomMemberProfile(source.roomId, ownerId);
+return true;
+}
+return true; // user（DM）は対象外
+} catch {
+return false; // 取得失敗＝在籍していない
+}
+}
+
+/* ====== OpenAI 呼び出し（短い日本語プロンプト＋タイムアウト） ====== */
+async function openaiTranslate(text, target) {
 // target: "JA" | "ZHTW"
-const prompt = `
-あなたは高精度の翻訳エンジンです。出力は訳文のみ。説明や前置きは不要。
-直訳ではなく意図を理解し、その言語の話者に自然で読みやすい文にしてください。
-ただし要点となる情報の増減は避けること。
-なお専門用語（半導体・フォトレジストなど）は文脈に応じて原義を保ち、不要な意訳や脚色はしない。
-出力言語：${target === "JA" ? "日本語" : "台湾華語（繁體中文）"}
+const langName = target === "JA" ? "日本語" : "台湾華語（繁體中文）";
+const prompt = `翻訳のみを出力。説明や原文の繰り返しは不要。専門用語は原義を保ちつつ自然で読みやすく。情報の増減はしない。
+出力言語：${langName}
 原文：
-"""${text}"""
-`.trim();
+"""${text}"""`;
 
+const ac = new AbortController();
+const timer = setTimeout(() => ac.abort("timeout"), OPENAI_TIMEOUT_MS);
+try {
 const r = await openai.chat.completions.create({
-model: "gpt-4o-mini",
+model: MODEL,
 messages: [{ role: "user", content: prompt }],
-temperature: 0.2,
-});
+temperature: 0.1,
+max_tokens: MAX_TOKENS,
+}, { signal: ac.signal });
+
 return (r.choices[0]?.message?.content || "").trim();
+} finally {
+clearTimeout(timer);
+}
 }
 
-/* “そのまま返った”ときの救済（再試行） */
-async function translateWithRetry(input, target) {
-const out1 = await translateStrict(input, target);
-// 出力が入力と完全一致/ほぼ一致なら再試行（句読点・空白差を除去して比較）
-const norm = s => s.replace(/\s+/g, "").replace(/[。、，．!?！？]/g, "");
-if (norm(out1) === norm(input)) {
-const out2 = await translateStrict(
-input,
-target
-);
-return out2 || out1;
-}
-return out1;
-}
-
+/* ====== Express ====== */
 const app = express();
 
 app.use((req, _res, next) => {
@@ -79,59 +90,82 @@ console.log(`[REQ] ${new Date().toISOString()} ${req.method} ${req.path}`);
 next();
 });
 
+app.get("/", (_req, res) => res.send("LINE Translator running"));
+
 app.post("/webhook", middleware(lineConfig), async (req, res) => {
 const events = req.body.events || [];
 console.log(`[WEBHOOK] events=${events.length}`);
 try {
-const results = await Promise.all(events.map(handleEvent));
-res.json(results);
+await Promise.all(events.map(handleEvent));
+res.sendStatus(200);
 } catch (e) {
 console.error("Webhook Error:", e);
-res.status(500).end();
+res.sendStatus(500);
 }
 });
 
+/* ====== メイン処理 ====== */
 async function handleEvent(event) {
 console.log(
 `[EVENT] type=${event.type} src=${event.source?.type} user=${event.source?.userId || "-"} text=${event.message?.text || ""}`
 );
 
-if (event.source?.type === "user" && ALLOWED_USER_ID && event.source.userId !== ALLOWED_USER_ID) {
-console.log("[INFO] Unauthorized user; ignore.");
-return;
+// アクセス制御：DMは管理者のみ、グループ/ルームは「管理者が在籍している場合のみ」
+if (event.source?.type === "user") {
+if (ALLOWED_USER_ID && event.source.userId !== ALLOWED_USER_ID) {
+return; // 返信しない（課金ガード）
 }
+} else if (event.source?.type === "group" || event.source?.type === "room") {
+if (ALLOWED_USER_ID) {
+const ok = await isOwnerInThread(event.source, ALLOWED_USER_ID);
+if (!ok) return; // 管理者不在のスレッドは無効
+}
+}
+
+// テキスト以外は無視
 if (event.type !== "message" || event.message.type !== "text") return;
 
 const input = (event.message.text || "").trim();
-if (!input) return;
+if (!input) {
+// 空文字だけは案内を返す
+return client.replyMessage(event.replyToken, {
+type: "text",
+text: "日本語・繁體中文・韓国語で送ってください。自動で相互翻訳します。",
+});
+}
 
-const mode = detectMode(input);
+// 方向自動判定（短文でも必ず翻訳に進む）
+const mode = detectMode(input) || "unknown";
 console.log(`[MODE] ${mode}`);
 
 try {
 if (mode === "ko2both") {
-const [ja, zh] = await Promise.all([
-translateWithRetry(input, "JA"),
-translateWithRetry(input, "ZHTW"),
+// 韓→日＆繁（1メッセージで返す）
+const [toJa, toZh] = await Promise.all([
+openaiTranslate(input, "JA"),
+openaiTranslate(input, "ZHTW"),
 ]);
-// 1メッセージに集約（見落とし防止）
-const text = `【日本語】\n${ja}\n\n【繁体字】\n${zh}`;
+const text = `【日本語】\n${toJa}\n\n【台湾華語】\n${toZh}`;
 return client.replyMessage(event.replyToken, { type: "text", text });
 } else if (mode === "ja2zh") {
-const zh = await translateWithRetry(input, "ZHTW");
-return client.replyMessage(event.replyToken, { type: "text", text: zh });
+// 日→繁（「翻訳をお願い」など短文もそのまま翻訳）
+const toZh = await openaiTranslate(input, "ZHTW");
+return client.replyMessage(event.replyToken, { type: "text", text: toZh });
 } else if (mode === "zh2ja") {
-const ja = await translateWithRetry(input, "JA");
-return client.replyMessage(event.replyToken, { type: "text", text: ja });
+// 繁→日
+const toJa = await openaiTranslate(input, "JA");
+return client.replyMessage(event.replyToken, { type: "text", text: toJa });
 } else {
-return client.replyMessage(event.replyToken, {
-type: "text",
-text: "翻訳方向が特定できませんでした。日本語・繁体字・韓国語のいずれかで入力してください。",
-});
+// 判定できないときも、日本語→繁 でフォールバック
+const toZh = await openaiTranslate(input, "ZHTW");
+return client.replyMessage(event.replyToken, { type: "text", text: toZh });
 }
 } catch (err) {
 console.error("Translation Error:", err);
-return client.replyMessage(event.replyToken, { type: "text", text: "翻訳中にエラーが発生しました。" });
+return client.replyMessage(event.replyToken, {
+type: "text",
+text: "翻訳中にエラーが発生しました。少し時間をおいて再試行してください。",
+});
 }
 }
 

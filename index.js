@@ -1,4 +1,5 @@
-// index.js — LINE × OpenAI 翻訳Bot（軽量・グループ制限・JSON出力）
+// index.js — LINE × OpenAI 翻訳Bot（自然化ルール適用／ノーログ）
+
 import express from "express";
 import { Client, middleware } from "@line/bot-sdk";
 import OpenAI from "openai";
@@ -19,7 +20,7 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 /* ====== 軽量化パラメータ ====== */
 const MODEL = "gpt-4o-mini";
-const MAX_TOKENS = 200;
+const MAX_TOKENS = 300;
 const OPENAI_TIMEOUT_MS = 8000;
 
 /* ====== 文字種判定 ====== */
@@ -32,9 +33,9 @@ const hasKo = reHangul.test(text);
 const hasKana = reKana.test(text);
 const hasCJK = reCJK.test(text);
 
-if (hasKo) return "ko2both"; // 韓→日＆繁體字
-if (hasKana) return "ja2zhtw"; // 日→繁體字
-if (hasCJK && !hasKana && !hasKo) return "zhtw2ja"; // 繁體字→日
+if (hasKo) return "ko2both"; // 韓→日＆繁體
+if (hasKana) return "ja2zhtw"; // 日→繁體
+if (hasCJK && !hasKana && !hasKo) return "zhtw2ja"; // 繁體→日
 return "other2ja"; // その他 → 日
 }
 
@@ -55,17 +56,27 @@ return false;
 }
 }
 
-/* ====== OpenAI 翻訳（JSON出力＋タイムアウト） ====== */
+/* ====== OpenAI 翻訳（自然化ルール込み） ====== */
 async function openaiTranslate(text, target) {
-const langName = target === "JA" ? "日本語" : "繁體字";
-const prompt = `あなたは超高精度の翻訳エンジンです。出力は必ずJSON形式のみ。
-返すJSONは {"text":"..."} の1個だけ。textには翻訳文のみを入れる。
-説明や補足、原文の繰り返し、引用符や記号の追加は禁止。
-電子材料用途の業界で光学的な話や、レジスト製造、適用プロセスに関する言葉が多用される。
-技術的な専門用語は文脈に沿って原義を保ち意訳しすぎない。翻訳文は現地人が読みやすい自然な文章を徹底して.
-チャットでは主語や目的語が省略されがちなので、省略されたものを推定しできる範囲で自然に保管して。ただし事実の付け足しはしないで。
+// target: "JA" | "ZHTW"
+const langName = target === "JA" ? "日本語" : "繁體中文（臺灣）";
+const prompt = `あなたは高精度の翻訳エンジンです。出力は必ず JSON 形式のみ。
+返す JSON は {"text":"..."} の1個だけ。text には翻訳文のみを入れる。
+Markdown・コードフェンス・説明・原文の繰り返し・余計な接頭辞/接尾辞は禁止。
+先頭末尾に空行を入れない。1つの JSON オブジェクトのみを返す。
+
+翻訳方針：
+- 技術用語・固有名詞はできる限り直訳（ただし不自然な場合のみ文脈に沿って言い換える）
+- 直訳では意味が伝わりにくい言葉や慣用表現は、文脈に応じて自然で理解しやすい表現に置き換える
+- 情報の削除・追加はせず、原文の意味を忠実に保持する
+- 原文に存在する括弧や引用符（「」『』“”）は可能な範囲で維持し、新しく追加しない
+- 数値・単位・記号は正確に保持し、全角/半角は出力言語の慣習に従う
+- 出力言語が繁體中文のときは臺灣の語彙・語法を優先し、簡体字は用いない
+- 出力言語が英語のときは自然な米語スタイル（過剰敬語や直訳調は避ける）
+
 出力言語：${langName}
-原文："""${text}"""`;
+原文：
+"""${text}"""`;
 
 const ac = new AbortController();
 const timer = setTimeout(() => ac.abort("timeout"), OPENAI_TIMEOUT_MS);
@@ -75,15 +86,15 @@ model: MODEL,
 messages: [{ role: "user", content: prompt }],
 temperature: 0.1,
 max_tokens: MAX_TOKENS,
-response_format: { type: "json_object" },
 }, { signal: ac.signal });
 
-const raw = (r.choices[0]?.message?.content || "{}").trim();
-let out = "";
-try { out = JSON.parse(raw).text || ""; } catch { out = raw; }
-
-// 保険：全体を「」で囲っている場合は外す
-return out.replace(/^「([^「」]+)」$/u, "$1").trim();
+const raw = (r.choices[0]?.message?.content || "").trim();
+try {
+const parsed = JSON.parse(raw);
+return parsed.text || raw;
+} catch {
+return raw; // JSONが壊れた場合はそのまま返す
+}
 } finally {
 clearTimeout(timer);
 }
@@ -119,7 +130,12 @@ if (!ok) return;
 if (event.type !== "message" || event.message.type !== "text") return;
 
 const input = (event.message.text || "").trim();
-if (!input) return;
+if (!input) {
+return client.replyMessage(event.replyToken, {
+type: "text",
+text: "日本語・繁體中文・韓国語の文を送ってください。自動で翻訳します。",
+});
+}
 
 const mode = detectMode(input);
 
@@ -152,4 +168,3 @@ text: "翻訳に失敗しました。少し時間をおいて再試行してく�
 }
 
 app.listen(PORT, () => {});
-
